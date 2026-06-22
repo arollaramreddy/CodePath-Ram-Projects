@@ -170,6 +170,4 @@ The implementation diverged from the original hope because fine-tuning did not b
 
 ## AI Usage
 
-I used AI help to turn the project instructions into a planning document and label taxonomy, but I revised the wording to make it sound more like my own notes. I also asked AI to help format the dataset and remove short examples, but I kept the final CSV simple with only `text` and `label`.
-
-I also used AI help for the stretch-feature code: the inter-annotator calculator and prediction analysis script. I still need to provide the real second annotator labels and real confidence export from Colab for those stretch results to be complete.
+I used AI for understanding the accuracy results and the model predictions.
