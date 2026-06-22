@@ -140,3 +140,15 @@ For label stress testing, I can ask AI to generate borderline r/nba examples bet
 For annotation, I used AI/tooling to help make a first-pass CSV from public r/nba text. I still need to manually review the labels before treating the dataset as final. I will disclose that in the AI usage section.
 
 For failure analysis, after I evaluate the model I can give the wrong predictions to an AI tool and ask it to look for patterns. I will still check the pattern myself before writing it up, because the AI might overstate things.
+
+## Stretch Feature Plan
+
+I want to try all four stretch features, but two of them need extra data outside the current CSV.
+
+For inter-annotator reliability, I will give another person 30 examples from my dataset and ask them to label each one using the same four labels. I will compare their labels to mine using percent agreement and Cohen's kappa. I will look especially at disagreements between `analysis` and `hot_take`, because that is already the hardest boundary.
+
+For confidence calibration, I will use the fine-tuned model's confidence score on the test set. I will group predictions by confidence ranges and check whether higher confidence actually means higher accuracy.
+
+For error pattern analysis, I will look at the wrong predictions from the fine-tuned model and group them by label pair. I already expect one pattern to be that the model avoids `hot_take`, because the confusion matrix showed zero predictions for that label.
+
+I am not doing the deployed interface stretch right now because the local app needs the saved Colab model folder, and I am focusing on the analysis-based stretch features instead.
