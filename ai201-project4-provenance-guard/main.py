@@ -4,6 +4,7 @@ import re
 import uuid
 from collections import Counter
 from datetime import datetime, timezone
+from math import sqrt
 from typing import Any
 
 from flask import Flask, jsonify, request
@@ -53,6 +54,18 @@ def tokenize_words(text: str) -> list[str]:
 def split_sentences(text: str) -> list[str]:
     sentences = re.split(r"(?<=[.!?])\s+", text.strip())
     return [sentence.strip() for sentence in sentences if sentence.strip()]
+
+
+def coefficient_of_variation(values: list[int], fallback: float = 0.0) -> float:
+    if not values:
+        return fallback
+
+    mean = sum(values) / len(values)
+    if mean == 0:
+        return fallback
+
+    variance = sum((value - mean) ** 2 for value in values) / len(values)
+    return sqrt(variance) / mean
 
 
 def repeated_ngram_rate(words: list[str]) -> float:
@@ -143,6 +156,168 @@ def score_phrase_repetition(normalized_text: str) -> dict[str, Any]:
     }
 
 
+def rhythm_uniformity_reliability(sentence_count: int) -> float:
+    if sentence_count < 5:
+        return 0.30
+    if sentence_count < 8:
+        return 0.70
+    return 1.00
+
+
+def count_punctuation_types(text: str) -> int:
+    punctuation_checks = (
+        ".",
+        ",",
+        ";",
+        ":",
+        "?",
+        "!",
+        "-",
+        "(",
+        ")",
+        '"',
+        "'",
+    )
+    return sum(1 for punctuation in punctuation_checks if punctuation in text)
+
+
+def score_rhythm_uniformity(normalized_text: str) -> dict[str, Any]:
+    words = tokenize_words(normalized_text)
+    if not words:
+        return {
+            "signal": "rhythm_uniformity",
+            "score": 0.5,
+            "reliability": 0.1,
+            "features": {
+                "sentence_count": 0,
+                "mean_sentence_words": 0,
+                "sentence_length_cv": 0,
+                "paragraph_count": 0,
+                "paragraph_length_cv": 0,
+                "punctuation_types_used": 0,
+                "middle_length_sentence_share": 0,
+            },
+            "notes": ["Input was too short to score."],
+        }
+
+    sentences = split_sentences(normalized_text)
+    sentence_word_counts = [len(tokenize_words(sentence)) for sentence in sentences]
+    sentence_word_counts = [count for count in sentence_word_counts if count > 0]
+    sentence_count = len(sentence_word_counts)
+
+    if sentence_count == 0:
+        sentence_word_counts = [len(words)]
+        sentence_count = 1
+
+    mean_sentence_words = sum(sentence_word_counts) / sentence_count
+    sentence_length_cv = coefficient_of_variation(sentence_word_counts)
+
+    paragraphs = [paragraph for paragraph in normalized_text.split("\n\n") if paragraph.strip()]
+    paragraph_word_counts = [len(tokenize_words(paragraph)) for paragraph in paragraphs]
+    paragraph_count = len(paragraph_word_counts)
+    paragraph_length_cv = (
+        coefficient_of_variation(paragraph_word_counts)
+        if paragraph_count >= 2
+        else 0.5
+    )
+
+    punctuation_types_used = count_punctuation_types(normalized_text)
+    middle_length_count = sum(1 for count in sentence_word_counts if 12 <= count <= 28)
+    middle_length_sentence_share = middle_length_count / sentence_count
+
+    uniform_sentence_score = clamp((0.65 - sentence_length_cv) / 0.45)
+    uniform_paragraph_score = clamp((0.70 - paragraph_length_cv) / 0.50)
+    low_punctuation_variety_score = clamp((5 - punctuation_types_used) / 5)
+    middle_band_score = middle_length_sentence_share
+
+    score = (
+        (0.40 * uniform_sentence_score)
+        + (0.20 * uniform_paragraph_score)
+        + (0.20 * low_punctuation_variety_score)
+        + (0.20 * middle_band_score)
+    )
+
+    return {
+        "signal": "rhythm_uniformity",
+        "score": round(clamp(score), 2),
+        "reliability": rhythm_uniformity_reliability(sentence_count),
+        "features": {
+            "sentence_count": sentence_count,
+            "mean_sentence_words": round(mean_sentence_words, 1),
+            "sentence_length_cv": round(sentence_length_cv, 2),
+            "paragraph_count": paragraph_count,
+            "paragraph_length_cv": round(paragraph_length_cv, 2),
+            "punctuation_types_used": punctuation_types_used,
+            "middle_length_sentence_share": round(middle_length_sentence_share, 2),
+        },
+        "notes": ["Higher score means less burstiness and a more AI-like rhythm."],
+    }
+
+
+def combine_confidence(
+    phrase_signal: dict[str, Any],
+    rhythm_signal: dict[str, Any],
+    word_count: int,
+) -> float:
+    phrase_reliability = float(phrase_signal["reliability"])
+    rhythm_reliability = float(rhythm_signal["reliability"])
+    denominator = (0.55 * phrase_reliability) + (0.45 * rhythm_reliability)
+
+    if denominator == 0:
+        weighted_raw = 0.5
+    else:
+        weighted_raw = (
+            (0.55 * float(phrase_signal["score"]) * phrase_reliability)
+            + (0.45 * float(rhythm_signal["score"]) * rhythm_reliability)
+        ) / denominator
+
+    if word_count < 40:
+        length_shrink = 0.35
+    elif word_count < 120:
+        length_shrink = 0.70
+    else:
+        length_shrink = 1.00
+
+    calibrated = 0.5 + ((weighted_raw - 0.5) * length_shrink)
+
+    if abs(float(phrase_signal["score"]) - float(rhythm_signal["score"])) > 0.40:
+        calibrated = 0.5 + ((calibrated - 0.5) * 0.80)
+
+    return round(clamp(calibrated), 2)
+
+
+def choose_label_code(
+    confidence: float,
+    word_count: int,
+    phrase_signal: dict[str, Any],
+    rhythm_signal: dict[str, Any],
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    signal_disagreement = abs(float(phrase_signal["score"]) - float(rhythm_signal["score"]))
+
+    if word_count < 40:
+        reasons.append("insufficient_text_length")
+    if signal_disagreement > 0.40:
+        reasons.append("signal_disagreement")
+
+    if word_count < 40 or signal_disagreement > 0.40:
+        label_code = "uncertain"
+    elif confidence >= 0.75:
+        label_code = "likely_ai"
+        reasons.append("strong_ai_patterns")
+    elif confidence <= 0.35:
+        label_code = "likely_human"
+        reasons.append("weak_ai_patterns")
+    else:
+        label_code = "uncertain"
+        reasons.append("mixed_signal_strength")
+
+    if label_code == "uncertain" and not reasons:
+        reasons.append("mixed_signal_strength")
+
+    return {"labelCode": label_code, "reasons": reasons}
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
 
@@ -160,6 +335,10 @@ def create_app() -> Flask:
 
         normalized = normalize_text(text)
         phrase_signal = score_phrase_repetition(normalized)
+        rhythm_signal = score_rhythm_uniformity(normalized)
+        word_count = int(phrase_signal["features"].get("word_count", 0))
+        confidence = combine_confidence(phrase_signal, rhythm_signal, word_count)
+        label_decision = choose_label_code(confidence, word_count, phrase_signal, rhythm_signal)
         submission_id = f"sub_{uuid.uuid4().hex[:12]}"
 
         submission = {
@@ -170,9 +349,15 @@ def create_app() -> Flask:
             "authorId": payload.get("authorId"),
             "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
             "status": "labeled",
-            "labelCode": "uncertain",
-            "labelText": "Uncertain provenance - final confidence scoring will be added in M4.",
-            "signals": {"phrase_repetition": phrase_signal},
+            "labelCode": label_decision["labelCode"],
+            "labelText": "Transparency label text will be finalized in M5.",
+            "confidence": confidence,
+            "confidenceMeaning": "AI-likelihood estimate after calibration",
+            "signals": {
+                "phrase_repetition": phrase_signal,
+                "rhythm_uniformity": rhythm_signal,
+            },
+            "reasons": label_decision["reasons"],
         }
         SUBMISSIONS[submission_id] = submission
 
@@ -183,7 +368,10 @@ def create_app() -> Flask:
                     "status": submission["status"],
                     "labelCode": submission["labelCode"],
                     "labelText": submission["labelText"],
+                    "confidence": submission["confidence"],
+                    "confidenceMeaning": submission["confidenceMeaning"],
                     "signals": submission["signals"],
+                    "reasons": submission["reasons"],
                 }
             ),
             201,
