@@ -550,3 +550,84 @@ Verification:
 ## Stretch Feature Rule
 
 Before starting any stretch feature, update this file with the feature's scope, new API contract, changes to scoring or labels, and verification plan. Stretch work must not silently change the confidence meaning, label thresholds, or appeal statuses defined above.
+
+## Stretch Feature Plan
+
+This section was added before implementing stretch features.
+
+### Stretch 1: Ensemble Detection
+
+Scope: add a third signal named `specificity_gap` and update the scorer from a two-signal weighted score to a three-signal ensemble. The score direction remains unchanged: `0.0` is human-like evidence and `1.0` is AI-like evidence.
+
+What the third signal measures: whether the text lacks concrete, personal, sensory, or verifiable details while leaning on abstract general-purpose language. It should capture a different property than phrase repetition and rhythm uniformity. A paragraph can have no AI marker phrases and still feel generic; this signal catches that genericness.
+
+Signal output:
+
+```json
+{
+  "signal": "specificity_gap",
+  "score": 0.72,
+  "reliability": 1.0,
+  "features": {
+    "word_count": 160,
+    "first_person_rate": 0.0,
+    "concrete_detail_rate": 0.6,
+    "numeric_token_rate": 0.0,
+    "generic_abstraction_rate": 4.4
+  },
+  "notes": ["Higher score means fewer concrete details and more generic abstraction."]
+}
+```
+
+Ensemble weighting:
+
+- `phrase_repetition`: `0.45`
+- `rhythm_uniformity`: `0.35`
+- `specificity_gap`: `0.20`
+
+Conflict handling: if the highest signal score and lowest signal score differ by more than `0.45`, shrink the final confidence toward `0.50`. The label thresholds remain unchanged.
+
+Verification: submit a formulaic, generic sample and confirm all three signal scores are visible alongside the combined score. Submit a concrete personal sample and confirm the specificity score moves lower than the generic sample.
+
+### Stretch 2: Provenance Certificate
+
+Scope: add `POST /certificate` so a creator can complete a lightweight verification step for an existing submission. This is separate from AI detection. A certificate does not erase the AI-likelihood label; it adds a distinct verified provenance label.
+
+Verification step: the requester provides `submissionId`, `creator`, `verificationMethod`, and `evidenceSummary`. Accepted MVP verification methods are `draft_history`, `platform_account`, and `signed_statement`. The `evidenceSummary` must be at least 20 characters.
+
+Verified label text:
+
+```text
+Verified creator provenance - creator supplied {verification_method_label} evidence for this submission. This verification is separate from the AI-likelihood label.
+```
+
+Status and logging: a successful certificate creates `certificateId`, stores it on the submission, and appends a `certificate_verified` audit event with the current attribution result and confidence.
+
+Verification: create a submission, call `POST /certificate`, then call `GET /submission/{submissionId}` and confirm the certificate label appears separately from the standard transparency label.
+
+### Stretch 3: Analytics Dashboard Endpoint
+
+Scope: add `GET /analytics` returning dashboard-ready JSON. This counts as a source-visible dashboard view for the MVP.
+
+Metrics:
+
+- detection pattern: counts and ratios for `likely_ai`, `likely_human`, and `uncertain`
+- appeal rate: appealed submissions divided by total submissions
+- average confidence
+- certificate rate
+- rate limit configuration
+
+Verification: create at least three submissions across label types, submit one appeal, verify one certificate, and confirm `/analytics` returns all metrics.
+
+### Rate Limiting and Audit Hardening
+
+Scope: add route-level in-memory rate limiting with clear `429` JSON responses. Chosen demo-friendly limits:
+
+- `POST /submit`: 5 per minute per client
+- `POST /appeal`: 3 per minute per client
+- `POST /certificate`: 3 per minute per client
+- `GET /appeals`: 20 per minute per client
+
+Reasoning: content submission is the highest-volume action, appeals and certificates are lower-volume trust actions, and reviewer queues need enough headroom for normal refreshes.
+
+Audit hardening: every audit event should include a timestamp, event type, actor, `labelCode`, and `confidence` when the submission exists. This makes the log satisfy the rubric even for status-change events.
