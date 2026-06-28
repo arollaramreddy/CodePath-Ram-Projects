@@ -11,6 +11,8 @@ from flask import Flask, jsonify, request
 
 
 SUBMISSIONS: dict[str, dict[str, Any]] = {}
+APPEALS: dict[str, dict[str, Any]] = {}
+AUDIT_LOG: list[dict[str, Any]] = []
 
 AI_MARKER_PHRASES = (
     "it is important to note",
@@ -32,6 +34,28 @@ def clamp(value: float, minimum: float = 0.0, maximum: float = 1.0) -> float:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def add_audit_event(
+    submission_id: str,
+    event_type: str,
+    actor: str = "system",
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    event = {
+        "eventId": f"evt_{uuid.uuid4().hex[:12]}",
+        "submissionId": submission_id,
+        "eventType": event_type,
+        "timestamp": now_iso(),
+        "actor": actor,
+        "details": details or {},
+    }
+    AUDIT_LOG.append(event)
+    return event
+
+
+def audit_history(submission_id: str) -> list[dict[str, Any]]:
+    return [event for event in AUDIT_LOG if event["submissionId"] == submission_id]
 
 
 def normalize_text(text: str) -> str:
@@ -318,6 +342,88 @@ def choose_label_code(
     return {"labelCode": label_code, "reasons": reasons}
 
 
+def compose_label(label_code: str, confidence: float, reasons: list[str] | None = None) -> str:
+    ai_confidence_percent = round(confidence * 100)
+    human_confidence_percent = round((1 - confidence) * 100)
+
+    if label_code == "likely_ai":
+        return (
+            "Likely AI-generated or AI-assisted - "
+            f"AI-likelihood confidence {ai_confidence_percent}%. "
+            "The writing shows repeated AI-like phrasing or unusually even rhythm. "
+            "You can appeal this label if you believe it is wrong."
+        )
+
+    if label_code == "likely_human":
+        return (
+            "Likely human-written - "
+            f"human-likelihood confidence {human_confidence_percent}%. "
+            "The configured detection signals did not find strong AI-generation patterns."
+        )
+
+    return (
+        "Uncertain provenance - "
+        f"AI-likelihood confidence {ai_confidence_percent}%. "
+        "The signals are mixed or the text is too short for a reliable label. "
+        "This result should not be treated as a final authorship decision."
+    )
+
+
+def find_open_appeal(submission_id: str) -> dict[str, Any] | None:
+    for appeal in APPEALS.values():
+        if appeal["submissionId"] == submission_id and appeal["appealStatus"] == "open":
+            return appeal
+    return None
+
+
+def appeal_queue_row(appeal: dict[str, Any]) -> dict[str, Any]:
+    submission = SUBMISSIONS[appeal["submissionId"]]
+    text_snippet = submission["text"][:240]
+
+    return {
+        "appealId": appeal["appealId"],
+        "submissionId": appeal["submissionId"],
+        "submittedAt": appeal["submittedAt"],
+        "requester": appeal["requester"],
+        "currentSubmissionStatus": submission["status"],
+        "currentLabelCode": submission["labelCode"],
+        "currentLabelText": submission["labelText"],
+        "confidence": submission["confidence"],
+        "phrase_repetition.score": submission["signals"]["phrase_repetition"]["score"],
+        "rhythm_uniformity.score": submission["signals"]["rhythm_uniformity"]["score"],
+        "textSnippet": text_snippet,
+        "reason": appeal["reason"],
+        "evidenceSummary": appeal.get("evidenceSummary", ""),
+        "auditHistory": audit_history(appeal["submissionId"]),
+        "reviewerActions": [
+            "uphold_label",
+            "change_to_uncertain",
+            "change_to_likely_human",
+            "change_to_likely_ai",
+        ],
+        "reviewerNotesField": "",
+    }
+
+
+def submission_response(submission: dict[str, Any]) -> dict[str, Any]:
+    response = {
+        "submissionId": submission["submissionId"],
+        "status": submission["status"],
+        "labelCode": submission["labelCode"],
+        "labelText": submission["labelText"],
+        "confidence": submission["confidence"],
+        "confidenceMeaning": submission["confidenceMeaning"],
+        "signals": submission["signals"],
+        "reasons": submission["reasons"],
+    }
+
+    if "appealId" in submission:
+        response["appealId"] = submission["appealId"]
+        response["appealStatus"] = submission["appealStatus"]
+
+    return response
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
 
@@ -350,7 +456,7 @@ def create_app() -> Flask:
             "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
             "status": "labeled",
             "labelCode": label_decision["labelCode"],
-            "labelText": "Transparency label text will be finalized in M5.",
+            "labelText": compose_label(label_decision["labelCode"], confidence, label_decision["reasons"]),
             "confidence": confidence,
             "confidenceMeaning": "AI-likelihood estimate after calibration",
             "signals": {
@@ -360,22 +466,151 @@ def create_app() -> Flask:
             "reasons": label_decision["reasons"],
         }
         SUBMISSIONS[submission_id] = submission
+        add_audit_event(
+            submission_id,
+            "submission_labeled",
+            details={
+                "labelCode": submission["labelCode"],
+                "confidence": submission["confidence"],
+                "phraseRepetitionScore": phrase_signal["score"],
+                "rhythmUniformityScore": rhythm_signal["score"],
+                "reasons": submission["reasons"],
+            },
+        )
+
+        return jsonify(submission_response(submission)), 201
+
+    @app.get("/submission/<submission_id>")
+    def get_submission(submission_id: str) -> tuple[Any, int]:
+        submission = SUBMISSIONS.get(submission_id)
+        if submission is None:
+            return jsonify({"error": "Submission not found."}), 404
+
+        response = submission_response(submission)
+        response["text"] = submission["text"]
+        response["metadata"] = submission["metadata"]
+        response["auditHistory"] = audit_history(submission_id)
+
+        open_appeal = find_open_appeal(submission_id)
+        if open_appeal is not None:
+            response["appeal"] = open_appeal
+
+        return jsonify(response), 200
+
+    @app.post("/appeal")
+    def submit_appeal() -> tuple[Any, int]:
+        payload = request.get_json(silent=True) or {}
+        submission_id = payload.get("submissionId")
+        requester = payload.get("requester")
+        reason = payload.get("reason")
+        requested_label = payload.get("requestedLabel")
+        evidence_summary = payload.get("evidenceSummary", "")
+
+        if not isinstance(submission_id, str) or not submission_id.strip():
+            return jsonify({"error": "Field 'submissionId' is required."}), 400
+
+        submission = SUBMISSIONS.get(submission_id)
+        if submission is None:
+            return jsonify({"error": "Submission not found."}), 404
+
+        if not isinstance(requester, str) or not requester.strip():
+            return jsonify({"error": "Field 'requester' is required."}), 400
+
+        if not isinstance(reason, str) or not 20 <= len(reason.strip()) <= 1000:
+            return jsonify({"error": "Field 'reason' must be 20-1000 characters."}), 400
+
+        allowed_labels = {"likely_human", "uncertain", "likely_ai"}
+        if requested_label is not None and requested_label not in allowed_labels:
+            return jsonify({"error": "Field 'requestedLabel' must be likely_human, uncertain, or likely_ai."}), 400
+
+        if evidence_summary is not None and not isinstance(evidence_summary, str):
+            return jsonify({"error": "Field 'evidenceSummary' must be a string when provided."}), 400
+
+        existing_appeal = find_open_appeal(submission_id)
+        if existing_appeal is not None:
+            return (
+                jsonify(
+                    {
+                        "appealId": existing_appeal["appealId"],
+                        "submissionId": submission_id,
+                        "appealStatus": existing_appeal["appealStatus"],
+                        "submissionStatus": submission["status"],
+                        "message": "An open appeal already exists for this submission.",
+                    }
+                ),
+                200,
+            )
+
+        appeal_id = f"app_{uuid.uuid4().hex[:12]}"
+        previous_status = submission["status"]
+        reason_excerpt = reason.strip()[:240]
+
+        appeal = {
+            "appealId": appeal_id,
+            "submissionId": submission_id,
+            "appealStatus": "open",
+            "submittedAt": now_iso(),
+            "requester": requester.strip(),
+            "reason": reason.strip(),
+            "requestedLabel": requested_label,
+            "evidenceSummary": evidence_summary.strip() if isinstance(evidence_summary, str) else "",
+            "labelAtSubmission": submission["labelCode"],
+            "confidenceAtSubmission": submission["confidence"],
+            "signalsAtSubmission": submission["signals"],
+        }
+        APPEALS[appeal_id] = appeal
+
+        submission["status"] = "under_review"
+        submission["appealId"] = appeal_id
+        submission["appealStatus"] = "open"
+
+        add_audit_event(
+            submission_id,
+            "appeal_submitted",
+            actor=requester.strip(),
+            details={
+                "appealId": appeal_id,
+                "previousLabel": appeal["labelAtSubmission"],
+                "previousConfidence": appeal["confidenceAtSubmission"],
+                "reasonExcerpt": reason_excerpt,
+            },
+        )
+        add_audit_event(
+            submission_id,
+            "submission_status_changed",
+            actor="system",
+            details={"from": previous_status, "to": "under_review", "appealId": appeal_id},
+        )
 
         return (
             jsonify(
                 {
+                    "appealId": appeal_id,
                     "submissionId": submission_id,
-                    "status": submission["status"],
-                    "labelCode": submission["labelCode"],
-                    "labelText": submission["labelText"],
-                    "confidence": submission["confidence"],
-                    "confidenceMeaning": submission["confidenceMeaning"],
-                    "signals": submission["signals"],
-                    "reasons": submission["reasons"],
+                    "appealStatus": appeal["appealStatus"],
+                    "submissionStatus": submission["status"],
+                    "message": "Appeal received and marked for human review.",
                 }
             ),
             201,
         )
+
+    @app.get("/appeals")
+    def list_appeals() -> tuple[Any, int]:
+        requested_status = request.args.get("status", "open")
+        rows = [
+            appeal_queue_row(appeal)
+            for appeal in APPEALS.values()
+            if requested_status == "all" or appeal["appealStatus"] == requested_status
+        ]
+        rows.sort(key=lambda row: row["submittedAt"])
+        return jsonify({"appeals": rows}), 200
+
+    @app.get("/audit/<submission_id>")
+    def get_audit(submission_id: str) -> tuple[Any, int]:
+        if submission_id not in SUBMISSIONS:
+            return jsonify({"error": "Submission not found."}), 404
+        return jsonify({"submissionId": submission_id, "auditEntries": audit_history(submission_id)}), 200
 
     return app
 

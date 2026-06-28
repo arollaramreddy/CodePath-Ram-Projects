@@ -2,11 +2,33 @@
 
 Provenance Guard is a lightweight service for tracing text submissions through AI-detection signals, confidence scoring, transparency labels, and an appeal path.
 
-This repository contains the architecture plan for Milestone 1 in `planning.md`.
+The implementation follows the milestone spec in `planning.md`.
 
 ## What is here
-- `README.md`: project overview and next steps
-- `planning.md`: submission flow, detection signal design, false positive handling, API contract, and architecture diagram
+- `main.py`: Flask API with submission scoring, transparency labels, appeals, and audit logs
+- `planning.md`: detection signal design, uncertainty thresholds, label variants, appeal workflow, API contract, and architecture diagram
+- `test_main.py`: unit tests for label reachability and appeal behavior
 
-## Next step
-Read `planning.md` before implementing the service so the connectors between submission, detection, scoring, labeling, and audit logging stay consistent.
+## Run the service
+
+```bash
+pip install -r requirements.txt
+python main.py
+```
+
+The service starts on Flask's default local development server.
+
+## Run tests
+
+```bash
+python -m unittest -v
+```
+
+## API endpoints
+
+- `GET /health`: returns service health.
+- `POST /submit`: accepts text, runs both detection signals, returns confidence, label text, and reasons.
+- `GET /submission/<submissionId>`: returns the stored submission, current status, audit history, and appeal state.
+- `POST /appeal`: opens an appeal for an existing submission and marks it `under_review`.
+- `GET /appeals?status=open`: returns reviewer queue rows for open appeals.
+- `GET /audit/<submissionId>`: returns audit events for a submission.
