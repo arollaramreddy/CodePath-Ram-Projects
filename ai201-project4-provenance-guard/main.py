@@ -714,9 +714,50 @@ def create_app() -> Flask:
         payload, status_code = rate_limit_response
         return jsonify(payload), status_code
 
+    @app.get("/")
+    def index() -> tuple[Any, int]:
+        return (
+            jsonify(
+                {
+                    "service": "Provenance Guard",
+                    "status": "running",
+                    "message": "Use the API endpoints below to demo the project.",
+                    "endpoints": {
+                        "health": "GET /health",
+                        "submit": "POST /submit",
+                        "submission": "GET /submission/<submissionId>",
+                        "appeal": "POST /appeal",
+                        "appeals": "GET /appeals?status=open",
+                        "certificate": "POST /certificate",
+                        "analytics": "GET /analytics",
+                        "audit": "GET /audit/<submissionId>",
+                    },
+                }
+            ),
+            200,
+        )
+
     @app.get("/health")
     def health() -> tuple[Any, int]:
         return jsonify({"status": "ok"}), 200
+
+    @app.get("/submit")
+    def submit_instructions() -> tuple[Any, int]:
+        return (
+            jsonify(
+                {
+                    "message": "Submit text with a POST request.",
+                    "method": "POST",
+                    "endpoint": "/submit",
+                    "examplePayload": {
+                        "text": "Paste the writing you want to evaluate here.",
+                        "authorId": "student_123",
+                        "metadata": {"assignment": "demo"},
+                    },
+                }
+            ),
+            200,
+        )
 
     @app.post("/submit")
     def submit() -> tuple[Any, int]:
@@ -787,6 +828,26 @@ def create_app() -> Flask:
             response["appeal"] = open_appeal
 
         return jsonify(response), 200
+
+    @app.get("/appeal")
+    def appeal_instructions() -> tuple[Any, int]:
+        return (
+            jsonify(
+                {
+                    "message": "Appeals must be submitted with a POST request.",
+                    "method": "POST",
+                    "endpoint": "/appeal",
+                    "examplePayload": {
+                        "submissionId": "sub_example123",
+                        "requester": "student_123",
+                        "reason": "I believe this label is wrong because I can provide draft history and notes.",
+                        "requestedLabel": "likely_human",
+                        "evidenceSummary": "Drafts, outline, and revision notes are available for review.",
+                    },
+                }
+            ),
+            200,
+        )
 
     @app.post("/appeal")
     def submit_appeal() -> tuple[Any, int]:
@@ -896,6 +957,30 @@ def create_app() -> Flask:
         ]
         rows.sort(key=lambda row: row["submittedAt"])
         return jsonify({"appeals": rows}), 200
+
+    @app.get("/certificate")
+    def certificate_instructions() -> tuple[Any, int]:
+        return (
+            jsonify(
+                {
+                    "message": "Create a provenance certificate with a POST request.",
+                    "method": "POST",
+                    "endpoint": "/certificate",
+                    "examplePayload": {
+                        "submissionId": "sub_example123",
+                        "creator": "student_123",
+                        "verificationMethod": "draft_history",
+                        "evidenceSummary": "Creator provided draft history and revision evidence.",
+                    },
+                    "verificationMethods": [
+                        "draft_history",
+                        "platform_account",
+                        "signed_statement",
+                    ],
+                }
+            ),
+            200,
+        )
 
     @app.post("/certificate")
     def create_certificate() -> tuple[Any, int]:

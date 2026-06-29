@@ -442,49 +442,6 @@ One implementation divergence is that I added `GET /appeals` and `GET /audit/<su
 
 I used an AI coding assistant for planning, implementation, and documentation, but I kept the system behavior tied to the spec and revised places where the output was too vague or mismatched.
 
-Specific instances:
 
-1. I directed the AI to turn the milestone prompt into an implementation-ready `planning.md`. It produced the two-signal design, scoring thresholds, label variants, appeal workflow, and architecture diagram. I revised the spec to make the score direction explicit (`0.0` human-like, `1.0` AI-like), added a short-text uncertainty override, and corrected a sample reliability value so the spec and implementation would agree.
 
-2. I directed the AI to implement M3, M4, and M5 in separate commits. It produced the Flask app skeleton, signal functions, scoring logic, labels, appeal endpoint, audit helpers, and tests. I checked the scores with concrete inputs, kept the conservative thresholds from the spec, and added tests for all three label variants plus duplicate appeal handling.
 
-3. I directed the AI to expand the README into a submission artifact rather than a feature list. It produced the architecture and design-decision sections. I grounded the examples with actual scores from the running code and revised the rate-limit section after implementing real `429` behavior.
-
-4. I directed the AI to add stretch features only after extending `planning.md`. It produced the first pass of the ensemble signal, certificate endpoint, analytics endpoint, rate limiter, and tests. I revised the scoring weights, made audit entries include `labelCode` and `confidence` at the top level, and kept certificates separate from the standard AI-likelihood label so verification would not erase the attribution result.
-
-## Portfolio Walkthrough Guide
-
-I cannot record audio or a screen from this repo environment, but this is the short walkthrough script I would use for a 2-3 minute portfolio recording.
-
-### Suggested Recording Flow
-
-1. Show `planning.md` briefly and say: "This project started with a spec that defined the signals, confidence thresholds, label text, and appeal flow before implementation."
-2. Show `main.py` and point out `score_phrase_repetition`, `score_rhythm_uniformity`, `score_specificity_gap`, `combine_confidence`, `compose_label`, `submit_appeal`, `create_certificate`, and `analytics`.
-3. Run the tests:
-
-```bash
-python -m unittest -v
-```
-
-4. Submit a high-confidence AI-like sample and point out `confidence: 0.94`, `labelCode: likely_ai`, and the three signal scores.
-5. Submit a human-like sample and point out `confidence: 0.19`, `labelCode: likely_human`, and the lower signal scores.
-6. Submit an appeal for the likely-AI result and show the status changing to `under_review`.
-7. Create a provenance certificate and show the separate verified provenance label.
-8. Open `/analytics` and point out detection pattern, appeal rate, average confidence, and certificate rate.
-9. Open the audit endpoint and point out the `submission_labeled`, `appeal_submitted`, `submission_status_changed`, and `certificate_verified` events.
-10. Trigger the submit rate limit and show the `429` response.
-11. Close by saying: "The key design decision was not to claim certainty. The project exposes signal evidence, shrinks confidence when evidence is weak, gives users an appeal path, and keeps verification separate from attribution."
-
-### Short Voiceover Draft
-
-```text
-This is Provenance Guard, a small Flask service that labels text provenance with transparent uncertainty. I built it from a written spec first, so the implementation had concrete signal outputs, thresholds, label text, and appeal behavior.
-
-The submission endpoint normalizes text, runs three signals, and combines them into an AI-likelihood confidence score. The first signal looks for repeated AI-associated phrasing and repeated structure. The second looks for unusually even rhythm, like low sentence-length variation and limited punctuation variety. The third looks for a specificity gap: generic abstraction without concrete personal detail. I combine them with reliability weights and pull the score toward uncertainty for short text or conflicting signals.
-
-Here is a formulaic repeated sample. It gets a 0.94 confidence and the likely-AI label. Here is a more concrete, uneven personal sample. It gets a 0.19 AI-likelihood score and the likely-human label. A short or mixed sample lands in the uncertain range.
-
-The appeal flow is the accountability layer. When I submit an appeal, the submission moves from labeled to under_review. The system stores the appeal, prevents duplicate open appeals, and writes audit events for the original label and the status change. I also added stretch features: a creator can request a verified provenance certificate, and the analytics endpoint reports detection pattern, appeal rate, average confidence, and certificate rate.
-
-If this were production, I would not ship these heuristics as proof. I would calibrate against real domain data, add authentication, move rate-limit state to a shared store, persist the audit log, and put a human reviewer in front of high-impact decisions.
-```
